@@ -1,0 +1,6 @@
+C:\Users\Byn Mars\Desktop\MiniBaseSO-master\bin\Minibase\bin\Debug\Minibase.dll
+C:\Users\Byn Mars\Desktop\MiniBaseSO-master\bin\Minibase\bin\Debug\Minibase.pdb
+C:\Users\Byn Mars\Desktop\MiniBaseSO-master\bin\Minibase\obj\Debug\Minibase.csproj.AssemblyReference.cache
+C:\Users\Byn Mars\Desktop\MiniBaseSO-master\bin\Minibase\obj\Debug\Minibase.csproj.CoreCompileInputs.cache
+C:\Users\Byn Mars\Desktop\MiniBaseSO-master\bin\Minibase\obj\Debug\Minibase.dll
+C:\Users\Byn Mars\Desktop\MiniBaseSO-master\bin\Minibase\obj\Debug\Minibase.pdb

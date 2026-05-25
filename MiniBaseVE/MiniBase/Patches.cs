@@ -1,0 +1,348 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using Database;
+using HarmonyLib;
+using Klei.AI;
+using KMod;
+using MiniBase.Model;
+using MiniBase.Model.Enums;
+using ProcGen;
+using ProcGenGame;
+using PeterHan.PLib.Core;
+using PeterHan.PLib.Database;
+
+
+// ReSharper disable InconsistentNaming
+
+namespace MiniBase
+{
+    internal class Patches
+    {
+        #region Misc
+
+        /// <summary>
+        /// Reload mod options at asteroid select screen, before world gen happens
+        /// </summary>
+        [HarmonyPatch(typeof(ColonyDestinationSelectScreen), "LaunchClicked")]
+        public static class ColonyDestinationSelectScreen_LaunchClicked_Patch
+        {
+            public static void Prefix()
+            {
+                MiniBaseOptions.Reload();
+            }
+        }
+
+
+        [HarmonyPatch(typeof(ColonyDestinationSelectScreen), "OnSpawn")]
+        public static class ColonyDestinationSelectScreen_OnSpawn_Patch
+        {
+            public static void Prefix()
+            {
+                MiniBaseOptions.Reload();
+
+                WorldGen_RenderOffline_Patch.FoundTemporalTearOpener = false;
+                WorldGen_RenderOffline_Patch.AfterWorldGen = false;
+
+                if (DlcManager.IsExpansion1Active())
+                {
+
+                }
+                else
+                {
+                    VanillaOnSpawn();
+                }
+            }
+
+            private static void VanillaOnSpawn()
+            {
+                var minibaseWorld = SettingsCache.worlds.worldCache[MoonletData.VanillaStartMap];
+                Traverse
+                    .Create(minibaseWorld)
+                    .Property("worldsize")
+                    .SetValue(MiniBaseOptions.Instance.GetWorldSize(Moonlet.Start));
+            }
+        }
+
+    }
+
+    /// <summary>
+    /// Reload mod options when game is reloaded from save.
+    /// </summary>
+    [HarmonyPatch(typeof(Game), "OnPrefabInit")]
+    public static class Game_OnPrefabInit_Patch
+    {
+        public static void Prefix()
+        {
+            MiniBaseOptions.Reload();
+        }
+    }
+
+    /// <summary>
+    /// Reveal the map on startup.
+    //  </summary>
+    [HarmonyPatch(typeof(MinionSelectScreen), "OnProceed")]
+    public static class MinionSelectScreen_OnProceed_Patch
+    {
+        public static void Postfix()
+        {
+            if (!MoonletData.IsMiniBaseCluster())
+            {
+                return;
+            }
+
+            var radius = (int)(Math.Max(Grid.WidthInCells, Grid.HeightInCells) * 1.5f);
+            GridVisibility.Reveal(0, 0, radius, radius - 1);
+        }
+    }
+
+    /// <summary>
+    /// Open the temporal tear if no opener has been found in the cluster.
+    /// </summary>
+    [HarmonyPatch(typeof(ClusterPOIManager), "RegisterTemporalTear")]
+    public static class ClusterPOIManager_RegisterTemporalTear_Patch
+    {
+        public static void Postfix(TemporalTear temporalTear, ClusterPOIManager __instance)
+        {
+            if (!MoonletData.IsMiniBaseCluster())
+            {
+                return;
+            }
+
+            if (!temporalTear.IsOpen() &&
+                !WorldGen_RenderOffline_Patch.FoundTemporalTearOpener &&
+                WorldGen_RenderOffline_Patch.AfterWorldGen)
+            {
+                temporalTear.Open();
+            }
+
+            WorldGen_RenderOffline_Patch.AfterWorldGen = false;
+            WorldGen_RenderOffline_Patch.FoundTemporalTearOpener = false;
+        }
+    }
+
+    /// <summary>
+    /// Load translatable mod strings.
+    /// </summary>
+
+    [HarmonyPatch(typeof(Localization), "Initialize")]
+    public static class Localization_Initialize_Patch
+    {
+        public static void Postfix() => Translate(typeof(STRINGS));
+
+        private static void Translate(Type root)
+        {
+            // basic intended way to register strings, keeps namespace
+            Localization.RegisterForTranslation(root);
+
+            // load user created translation files
+            LoadStrings();
+
+            // register strings without namespace
+            // because we already loaded user translations
+            // custom languages will overwrite these
+            LocString.CreateLocStringKeys(root, null);
+
+            // creates template for users to edit
+            Localization.GenerateStringsTemplate(root,
+                System.IO.Path.Combine(Manager.GetDirectory(), "strings_templates"));
+        }
+
+        private static void LoadStrings()
+        {
+            var code = Localization.GetLocale()?.Code;
+            if (code.IsNullOrWhiteSpace())
+            {
+                return;
+            }
+
+            var path = System.IO.Path.Combine(ModUtils.Constants.ModPath, "translations",
+                code + ".po");
+            if (File.Exists(path))
+            {
+                Localization.OverloadStrings(Localization.LoadStringsFile(path, false));
+            }
+        }
+    }
+
+        #endregion
+
+    #region CarePackages
+
+    /// <summary>
+    /// Patching the frequency at which care packages become available.
+    /// </summary>
+    [HarmonyPatch(typeof(Game), "OnSpawn")]
+    public static class Game_OnSpawn_Patch
+    {
+        public static void Postfix()
+        {
+            if (!MoonletData.IsMiniBaseCluster())
+            {
+                return;
+            }
+
+            var immigration = Immigration.Instance;
+            const float SecondsPerDay = 600f;
+            var frequency = MiniBaseOptions.Instance.FastImmigration
+                ? 10f
+                : (MiniBaseOptions.Instance.CarePackageFrequency * SecondsPerDay);
+            immigration.spawnInterval = new[] { frequency, frequency };
+            immigration.timeBeforeSpawn = Math.Min(frequency, immigration.timeBeforeSpawn);
+        }
+    }
+
+    /// <summary>
+    /// Remove the need to discover items for them to be available in the printing pod.
+    /// </summary>
+    [HarmonyPatch(typeof(Immigration), "DiscoveredCondition")]
+    public static class Immigration_DiscoveredCondition_Patch
+    {
+        public static void Postfix(ref bool __result)
+        {
+            if (MoonletData.IsMiniBaseCluster())
+            {
+                __result = true;
+            }
+        }
+    }
+
+    #endregion
+
+    #region WorldGen
+
+    /// <summary>
+    /// Bypass and rewrite world generation. Spawn temporal tear and open it since
+    /// the minibase cluster does not spawn a moonlet with a temporal tear opener.
+    /// </summary>
+    [HarmonyPatch(typeof(WorldGen), "RenderOffline")]
+    public static class WorldGen_RenderOffline_Patch
+    {
+        public static bool AfterWorldGen;
+        public static bool FoundTemporalTearOpener;
+
+        public static bool Prefix(WorldGen __instance)
+        {
+            // Skip the original method if on minibase world
+            return !MoonletData.IsMiniBaseWorld(__instance);
+        }
+
+        public static void Postfix(
+            WorldGen __instance,
+            ref bool __result,
+            bool doSettle,
+            uint simSeed,
+            BinaryWriter writer,
+            ref Sim.Cell[] cells,
+            ref Sim.DiseaseCell[] dc,
+            int baseId,
+            ref List<WorldTrait> placedStoryTraits,
+            bool isStartingWorld)
+        {
+            if (!MoonletData.IsMiniBaseWorld(__instance))
+            {
+                return;
+            }
+
+            try
+            {
+                MiniBaseWorldGen.CreateWorld(
+                    __instance,
+                    writer,
+                    simSeed,
+                    baseId,
+                    out cells,
+                    out dc);
+                __result = true;
+            }
+            catch (Exception e)
+            {
+                __instance.ReportWorldGenError(e);
+                __result = false;
+                return;
+            }
+
+            if (!DlcManager.IsExpansion1Active())
+            {
+                return;
+            }
+
+            AfterWorldGen = true;
+
+            if (FoundTemporalTearOpener || __instance.POISpawners == null)
+            {
+                return;
+            }
+
+            var spawner = __instance.POISpawners
+                .Where(s => s.container.buildings != null)
+                .FirstOrDefault(s => s.container.buildings.Exists(b => b.id == "TemporalTearOpener"));
+            FoundTemporalTearOpener = spawner != null;
+        }
+    }
+
+    /// <summary>
+    /// Add additional harvestable space POI for spaced out to make niobium and resin renewable.
+    /// </summary>
+    [HarmonyPatch(typeof(EntityConfigManager), "RegisterEntities")]
+    public static class EntityConfigManager_RegisterEntities_Patch
+    {
+        public static void Postfix(IMultiEntityConfig config)
+        {
+            if (!(config is HarvestablePOIConfig))
+            {
+                return;
+            }
+
+            var addPrefab = new Action<HarvestablePOIConfig.HarvestablePOIParams>(poiConfig =>
+            {
+                var prefab = HarvestablePOIConfig.CreateHarvestablePOI(poiConfig);
+
+                var component = prefab.GetComponent<KPrefabID>();
+                component.prefabInitFn += config.OnPrefabInit;
+                component.prefabSpawnFn += config.OnSpawn;
+                Assets.AddPrefab(component);
+            });
+            addPrefab(new HarvestablePOIConfig.HarvestablePOIParams("metallic_asteroid_field",
+                new HarvestablePOIConfigurator.HarvestablePOIType("NiobiumAsteroidField",
+                    new Dictionary<SimHashes, float>()
+                    {
+                    {
+                        SimHashes.Obsidian,
+                        5.0f
+                    },
+                    {
+                        SimHashes.MoltenTungsten,
+                        3.0f
+                    },
+                    {
+                        SimHashes.Niobium,
+                        0.03f
+                    }
+                    },
+                    requiredDlcIds: null,
+                    forbiddenDlcIds: null)));
+            addPrefab(new HarvestablePOIConfig.HarvestablePOIParams("gilded_asteroid_field",
+                new HarvestablePOIConfigurator.HarvestablePOIType("ResinAsteroidField",
+                    new Dictionary<SimHashes, float>()
+                    {
+                    {
+                        SimHashes.Fossil,
+                        0.2f
+                    },
+                    {
+                        SimHashes.CrudeOil,
+                        0.4f
+                    },
+                    {
+                        SimHashes.Resin,
+                        0.4f
+                    }
+                    }, 56250, 56250, 30000, 30000,
+                    requiredDlcIds: null,
+                    forbiddenDlcIds: null)));
+        }
+    }
+}
+    #endregion

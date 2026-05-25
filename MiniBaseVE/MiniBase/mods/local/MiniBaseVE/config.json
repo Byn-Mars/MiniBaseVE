@@ -1,0 +1,17 @@
+{
+  "DebugMode": false,
+  "FastImmigration": false,
+  "SkipLiveableArea": false,
+  "FeatureWest": 3,
+  "FeatureEast": 4,
+  "FeatureSouth": 10,
+  "Biome": 0,
+  "CoreBiome": 0,
+  "ResourceMod": 1,
+  "SpaceAccess": 1,
+  "TunnelAccess": 3,
+  "BaseWidth": 70,
+  "BaseHeight": 40,
+  "BuildableSpaceTop": 0,
+  "CarePackageFrequency": 2
+}
